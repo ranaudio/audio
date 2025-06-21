@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useRef } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import JSZip from 'jszip'
 import { saveAs } from 'file-saver'
@@ -268,39 +268,111 @@ export default function AudioGenerator() {
       requestBody.elevenLabsVoiceId = selectedVoice;
     }
 
-    console.log(`🚀 Processing batch ${batchIndex + 1}: ${batchChunks.length} chunks`);
-
-    const response = await fetch('/api/generate-audio-batch', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(requestBody)
+    console.log(`🚀 [BATCH ${batchIndex + 1}] Starting batch processing:`, {
+      batchIndex: batchIndex + 1,
+      chunkCount: batchChunks.length,
+      provider: selectedProvider,
+      voice: selectedVoice,
+      model: selectedModel,
+      requestBody: requestBody,
+      chunks: batchChunks.map(c => ({ index: c.index, textLength: c.text.length }))
     });
 
-    if (!response.ok) {
-      const errorData = await response.json();
-      throw new Error(errorData.error || `Batch ${batchIndex + 1} failed: ${response.status}`);
-    }
+    try {
+      console.log(`📡 [BATCH ${batchIndex + 1}] Making fetch request to /api/generate-audio-batch`);
+      
+      const response = await fetch('/api/generate-audio-batch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(requestBody)
+      });
 
-    const data = await response.json();
-    return data.results;
+      console.log(`📡 [BATCH ${batchIndex + 1}] Response received:`, {
+        status: response.status,
+        statusText: response.statusText,
+        ok: response.ok,
+        headers: Object.fromEntries(response.headers.entries()),
+        url: response.url
+      });
+
+      if (!response.ok) {
+        let errorData;
+        try {
+          errorData = await response.json();
+          console.error(`❌ [BATCH ${batchIndex + 1}] Server error response:`, errorData);
+        } catch (parseError) {
+          console.error(`❌ [BATCH ${batchIndex + 1}] Failed to parse error response:`, parseError);
+          const responseText = await response.text();
+          console.error(`❌ [BATCH ${batchIndex + 1}] Raw error response:`, responseText);
+          errorData = { error: `HTTP ${response.status}: ${responseText || response.statusText}` };
+        }
+        throw new Error(errorData.error || `Batch ${batchIndex + 1} failed: ${response.status} ${response.statusText}`);
+      }
+
+      const data = await response.json();
+      console.log(`✅ [BATCH ${batchIndex + 1}] Success response:`, {
+        totalChunks: data.totalChunks,
+        successfulChunks: data.successfulChunks,
+        failedChunks: data.failedChunks,
+        hasErrors: !!data.errors,
+        results: data.results?.map((r: any) => ({
+          chunkIndex: r.chunkIndex,
+          success: r.success,
+          audioUrl: r.audioUrl,
+          filename: r.filename,
+          error: r.error
+        }))
+      });
+
+      return data.results;
+
+    } catch (error: any) {
+      console.error(`❌ [BATCH ${batchIndex + 1}] Batch processing failed:`, {
+        error: error.message,
+        stack: error.stack,
+        name: error.name,
+        cause: error.cause
+      });
+      throw error;
+    }
   }
 
   // Generate audio with batching
   const handleGenerateAudio = async () => {
+    console.log('🎬 [GENERATION] Starting audio generation process');
+    
     if (!text.trim()) {
+      console.warn('⚠️ [GENERATION] No text provided');
       showMessage('Please enter some text to generate audio', 'error')
       return
     }
 
     if (!selectedVoice) {
+      console.warn('⚠️ [GENERATION] No voice selected');
       showMessage('Please select a voice', 'error')
       return
     }
 
     if (textChunks.length === 0) {
+      console.warn('⚠️ [GENERATION] No text chunks available');
       showMessage('No text chunks to process', 'error')
       return
     }
+
+    console.log('📋 [GENERATION] Generation parameters:', {
+      textLength: text.length,
+      wordCount: getWordCount(),
+      estimatedDuration: getEstimatedDuration(),
+      chunksCount: textChunks.length,
+      provider: selectedProvider,
+      voice: selectedVoice,
+      model: selectedModel,
+      chunks: textChunks.map(c => ({ 
+        index: c.index, 
+        textLength: c.text.length, 
+        preview: c.text.substring(0, 50) + '...' 
+      }))
+    });
 
     setIsGenerating(true)
     setIsPaused(false)
@@ -321,6 +393,12 @@ export default function AudioGenerator() {
       const batchSize = 10;
       const totalBatches = Math.ceil(textChunks.length / batchSize)
       
+      console.log('📊 [GENERATION] Batch processing setup:', {
+        totalChunks: textChunks.length,
+        batchSize: batchSize,
+        totalBatches: totalBatches
+      });
+      
       setBatchProgress({
         totalBatches,
         completedBatches: 0,
@@ -334,6 +412,7 @@ export default function AudioGenerator() {
 
       for (let batchIndex = 0; batchIndex < totalBatches; batchIndex++) {
         if (isPaused) {
+          console.log('⏸️ [GENERATION] Generation paused by user');
           showMessage('Generation paused by user', 'info')
           break
         }
@@ -341,6 +420,14 @@ export default function AudioGenerator() {
         const batchStart = batchIndex * batchSize
         const batchEnd = Math.min(batchStart + batchSize, textChunks.length)
         const batchChunks = textChunks.slice(batchStart, batchEnd)
+
+        console.log(`🔄 [GENERATION] Processing batch ${batchIndex + 1}/${totalBatches}:`, {
+          batchIndex: batchIndex + 1,
+          batchStart,
+          batchEnd,
+          chunkCount: batchChunks.length,
+          chunkIndexes: batchChunks.map(c => c.index)
+        });
 
         // Update progress
         setBatchProgress(prev => prev ? {
@@ -358,10 +445,30 @@ export default function AudioGenerator() {
         try {
           const results = await processBatch(batchChunks, batchIndex)
           
+          console.log(`📊 [GENERATION] Batch ${batchIndex + 1} results:`, {
+            totalResults: results.length,
+            successful: results.filter((r: any) => r.success).length,
+            failed: results.filter((r: any) => !r.success).length,
+            results: results.map((r: any) => ({
+              chunkIndex: r.chunkIndex,
+              success: r.success,
+              audioUrl: r.audioUrl,
+              error: r.error
+            }))
+          });
+          
           // Update chunks with results
           setAudioChunks(prev => prev.map(chunk => {
             const result = results.find((r: any) => r.chunkIndex === chunk.chunkIndex)
             if (result) {
+              console.log(`🔄 [CHUNK ${result.chunkIndex}] Updating status:`, {
+                chunkIndex: result.chunkIndex,
+                success: result.success,
+                audioUrl: result.audioUrl,
+                filename: result.filename,
+                error: result.error
+              });
+              
               return {
                 ...chunk,
                 status: result.success ? 'completed' : 'failed',
@@ -385,10 +492,15 @@ export default function AudioGenerator() {
             failedChunks: prev.failedChunks + failedResults.length
           } : null)
 
-          console.log(`✅ Batch ${batchIndex + 1}/${totalBatches} completed: ${successfulResults.length} successful, ${failedResults.length} failed`)
+          console.log(`✅ [GENERATION] Batch ${batchIndex + 1}/${totalBatches} completed: ${successfulResults.length} successful, ${failedResults.length} failed`)
 
         } catch (error: any) {
-          console.error(`❌ Batch ${batchIndex + 1} failed:`, error.message)
+          console.error(`❌ [GENERATION] Batch ${batchIndex + 1} failed:`, {
+            batchIndex: batchIndex + 1,
+            error: error.message,
+            stack: error.stack,
+            batchChunks: batchChunks.map(c => ({ index: c.index, textLength: c.text.length }))
+          });
           
           // Mark all chunks in this batch as failed
           setAudioChunks(prev => prev.map(chunk => 
@@ -406,6 +518,7 @@ export default function AudioGenerator() {
 
         // Delay between batches (except for the last batch)
         if (batchIndex < totalBatches - 1 && !isPaused) {
+          console.log(`⏱️ [GENERATION] Waiting 3 seconds before next batch...`);
           showMessage(`Waiting 3 seconds before next batch...`, 'info')
           await new Promise(resolve => setTimeout(resolve, 3000))
         }
@@ -414,13 +527,29 @@ export default function AudioGenerator() {
       const finalProgress = batchProgress
       if (finalProgress) {
         const successRate = ((finalProgress.completedChunks / finalProgress.totalChunks) * 100).toFixed(1)
+        console.log(`🏁 [GENERATION] Generation completed:`, {
+          totalChunks: finalProgress.totalChunks,
+          completedChunks: finalProgress.completedChunks,
+          failedChunks: finalProgress.failedChunks,
+          successRate: successRate + '%'
+        });
         showMessage(`Generation completed! ${finalProgress.completedChunks}/${finalProgress.totalChunks} chunks successful (${successRate}%)`, finalProgress.failedChunks === 0 ? 'success' : 'info')
       }
 
     } catch (error: any) {
-      console.error('Audio generation error:', error)
+      console.error('💥 [GENERATION] Fatal error in audio generation:', {
+        error: error.message,
+        stack: error.stack,
+        name: error.name,
+        cause: error.cause,
+        currentProvider: selectedProvider,
+        currentVoice: selectedVoice,
+        textLength: text.length,
+        chunksCount: textChunks.length
+      });
       showMessage(`Audio generation failed: ${error.message}`, 'error')
     } finally {
+      console.log('🔚 [GENERATION] Audio generation process ended');
       setIsGenerating(false)
       setIsPaused(false)
     }
@@ -438,19 +567,50 @@ export default function AudioGenerator() {
 
   // Download individual audio
   const handleDownloadAudio = (audioUrl: string, filename: string) => {
-    const link = document.createElement('a')
-    link.href = audioUrl
-    link.download = filename
-    document.body.appendChild(link)
-    link.click()
-    document.body.removeChild(link)
+    console.log('📥 [DOWNLOAD] Starting individual audio download:', {
+      audioUrl,
+      filename,
+      timestamp: new Date().toISOString()
+    });
+
+    try {
+      const link = document.createElement('a')
+      link.href = audioUrl
+      link.download = filename
+      document.body.appendChild(link)
+      
+      console.log('📥 [DOWNLOAD] Triggering download click');
+      link.click()
+      
+      document.body.removeChild(link)
+      console.log('✅ [DOWNLOAD] Individual download completed successfully');
+    } catch (error: any) {
+      console.error('❌ [DOWNLOAD] Individual download failed:', {
+        error: error.message,
+        stack: error.stack,
+        audioUrl,
+        filename
+      });
+      showMessage(`Download failed: ${error.message}`, 'error');
+    }
   }
 
   // Download all audio as ZIP
   const handleDownloadAllAsZip = async () => {
     const completedChunks = audioChunks.filter(chunk => chunk.status === 'completed')
     
+    console.log('📦 [ZIP] Starting ZIP download process:', {
+      totalChunks: audioChunks.length,
+      completedChunks: completedChunks.length,
+      chunks: completedChunks.map(c => ({
+        chunkIndex: c.chunkIndex,
+        filename: c.filename,
+        audioUrl: c.audioUrl
+      }))
+    });
+    
     if (completedChunks.length === 0) {
+      console.warn('⚠️ [ZIP] No completed chunks available for download');
       showMessage('No completed audio chunks to download', 'error')
       return
     }
@@ -459,28 +619,75 @@ export default function AudioGenerator() {
       showMessage('Creating ZIP file...', 'info')
       
       const zip = new JSZip()
+      console.log('📦 [ZIP] Created new JSZip instance');
       
       // Download each audio file and add to zip
       for (const chunk of completedChunks) {
         try {
+          console.log(`📥 [ZIP] Fetching chunk ${chunk.chunkIndex}:`, {
+            chunkIndex: chunk.chunkIndex,
+            audioUrl: chunk.audioUrl,
+            filename: chunk.filename
+          });
+          
           const response = await fetch(chunk.audioUrl)
+          
+          console.log(`📡 [ZIP] Fetch response for chunk ${chunk.chunkIndex}:`, {
+            status: response.status,
+            statusText: response.statusText,
+            ok: response.ok,
+            headers: Object.fromEntries(response.headers.entries()),
+            url: response.url
+          });
+          
+          if (!response.ok) {
+            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+          }
+          
           const audioBlob = await response.blob()
+          console.log(`📦 [ZIP] Blob created for chunk ${chunk.chunkIndex}:`, {
+            size: audioBlob.size,
+            type: audioBlob.type
+          });
+          
           const paddedIndex = String(chunk.chunkIndex + 1).padStart(3, '0')
-          zip.file(`${paddedIndex}_${chunk.filename}`, audioBlob)
-        } catch (error) {
-          console.error(`Failed to fetch audio for chunk ${chunk.chunkIndex}:`, error)
+          const zipFilename = `${paddedIndex}_${chunk.filename}`;
+          zip.file(zipFilename, audioBlob)
+          
+          console.log(`✅ [ZIP] Added chunk ${chunk.chunkIndex} to ZIP as ${zipFilename}`);
+        } catch (error: any) {
+          console.error(`❌ [ZIP] Failed to fetch audio for chunk ${chunk.chunkIndex}:`, {
+            chunkIndex: chunk.chunkIndex,
+            audioUrl: chunk.audioUrl,
+            error: error.message,
+            stack: error.stack
+          });
         }
       }
 
+      console.log('📦 [ZIP] Generating ZIP blob...');
       // Generate ZIP
       const zipBlob = await zip.generateAsync({ type: 'blob' })
+      console.log('📦 [ZIP] ZIP blob generated:', {
+        size: zipBlob.size,
+        type: zipBlob.type
+      });
+      
       const timestamp = new Date().toISOString().slice(0, 19).replace(/:/g, '-')
       const providerName = TTS_PROVIDERS[selectedProvider as keyof typeof TTS_PROVIDERS]?.name
-      saveAs(zipBlob, `${providerName}_Audio_${timestamp}.zip`)
+      const zipFilename = `${providerName}_Audio_${timestamp}.zip`;
       
+      console.log('📦 [ZIP] Saving ZIP file:', { zipFilename });
+      saveAs(zipBlob, zipFilename)
+      
+      console.log('✅ [ZIP] ZIP download completed successfully');
       showMessage(`Downloaded ${completedChunks.length} audio files as ZIP`, 'success')
     } catch (error: any) {
-      console.error('Error creating ZIP:', error)
+      console.error('❌ [ZIP] Error creating ZIP:', {
+        error: error.message,
+        stack: error.stack,
+        completedChunksCount: completedChunks.length
+      });
       showMessage(`Failed to create ZIP: ${error.message}`, 'error')
     }
   }
@@ -559,6 +766,40 @@ export default function AudioGenerator() {
 
   const currentProvider = TTS_PROVIDERS[selectedProvider as keyof typeof TTS_PROVIDERS]
   const completedChunks = audioChunks.filter(chunk => chunk.status === 'completed')
+
+  // UseEffect to log environment and browser information when the component mounts
+  useEffect(() => {
+    console.log('🚀 [INIT] Audio Generator Component mounted');
+    console.log('🌐 [INIT] Environment information:', {
+      userAgent: navigator.userAgent,
+      platform: navigator.platform,
+      language: navigator.language,
+      languages: navigator.languages,
+      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+      cookieEnabled: navigator.cookieEnabled,
+      onLine: navigator.onLine,
+      windowLocation: window.location.href,
+      windowOrigin: window.location.origin,
+      referrer: document.referrer
+    });
+    
+    console.log('🎵 [INIT] Audio support check:', {
+      audioElement: !!document.createElement('audio').canPlayType,
+      mp3Support: document.createElement('audio').canPlayType('audio/mpeg'),
+      webAudioAPI: !!(window.AudioContext || (window as any).webkitAudioContext),
+      mediaDevices: !!navigator.mediaDevices
+    });
+    
+    console.log('📡 [INIT] Network information:', {
+      connection: (navigator as any).connection ? {
+        effectiveType: (navigator as any).connection.effectiveType,
+        downlink: (navigator as any).connection.downlink,
+        rtt: (navigator as any).connection.rtt
+      } : 'Not available'
+    });
+    
+    console.log('🔧 [INIT] TTS Providers configuration:', TTS_PROVIDERS);
+  }, []);
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-purple-50 via-blue-50 to-indigo-100">
@@ -937,7 +1178,40 @@ export default function AudioGenerator() {
 
                       {chunk.status === 'completed' && (
                         <div className="space-y-2">
-                          <audio controls className="w-full" style={{ height: '32px' }} preload="metadata">
+                          <audio 
+                            controls 
+                            className="w-full" 
+                            style={{ height: '32px' }} 
+                            preload="metadata"
+                            onLoadStart={() => {
+                              console.log(`🎵 [AUDIO] Load start for chunk ${chunk.chunkIndex}:`, {
+                                chunkIndex: chunk.chunkIndex,
+                                audioUrl: chunk.audioUrl,
+                                filename: chunk.filename
+                              });
+                            }}
+                            onLoadedData={() => {
+                              console.log(`✅ [AUDIO] Loaded data for chunk ${chunk.chunkIndex}`);
+                            }}
+                            onError={(e) => {
+                              const audioElement = e.target as HTMLAudioElement;
+                              console.error(`❌ [AUDIO] Error loading chunk ${chunk.chunkIndex}:`, {
+                                chunkIndex: chunk.chunkIndex,
+                                audioUrl: chunk.audioUrl,
+                                filename: chunk.filename,
+                                error: audioElement.error,
+                                networkState: audioElement.networkState,
+                                readyState: audioElement.readyState,
+                                currentSrc: audioElement.currentSrc
+                              });
+                            }}
+                            onCanPlay={() => {
+                              console.log(`🎵 [AUDIO] Can play chunk ${chunk.chunkIndex}`);
+                            }}
+                            onCanPlayThrough={() => {
+                              console.log(`🎵 [AUDIO] Can play through chunk ${chunk.chunkIndex}`);
+                            }}
+                          >
                             <source src={chunk.audioUrl} type="audio/mpeg" />
                             Your browser does not support the audio element.
                           </audio>
