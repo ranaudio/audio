@@ -39,11 +39,15 @@ const TTS_PROVIDERS: Record<string, TTSProvider> = {
       { id: "English_radiant_girl", name: "Radiant Girl" },
       { id: "English_captivating_female1", name: "Captivating Female" },
       { id: "English_Steady_Female_1", name: "Steady Women" },
+      { id: "moss_audio_aae8a176-3932-11f0-b24c-2e48b7cbf811", name: "Jane - Older Woman" },
       // Prioritized Male
       { id: "English_CaptivatingStoryteller", name: "Captivating Storyteller" },
       { id: "English_Deep-VoicedGentleman", name: "Man With Deep Voice" },
       { id: "English_magnetic_voiced_man", name: "Magnetic-voiced Male" },
       { id: "English_ReservedYoungMan", name: "Reserved Young Man" },
+      // Custom/Cloned voices
+      { id: "moss_audio_5e17ecb2-3bd8-11f0-b24c-2e48b7cbf811", name: "Sleep Channel History" },
+      { id: "moss_audio_094b69ed-4da5-11f0-a6ae-72d5dcf0f535", name: "SSS Cloned Voice" },
       // Remaining voices
       { id: "English_expressive_narrator", name: "Expressive Narrator" },
       { id: "English_compelling_lady1", name: "Compelling Lady" },
