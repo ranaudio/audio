@@ -432,7 +432,7 @@ export default function AudioGenerator() {
     setAudioChunks(initialAudioChunks)
 
     try {
-      const batchSize = 10;
+      const batchSize = 5;
       const totalBatches = Math.ceil(textChunks.length / batchSize)
       
       console.log('📊 [GENERATION] Batch processing setup:', {
@@ -1173,7 +1173,7 @@ export default function AudioGenerator() {
                 </div>
                 
                 <p className="text-sm text-blue-700 mt-2">
-                  Processing in batches of 10 chunks with 1:05 minute delays between batch sends
+                  Processing in batches of 5 chunks with 1:05 minute delays between batch sends
                 </p>
               </motion.div>
             )}
