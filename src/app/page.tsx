@@ -568,27 +568,54 @@ export default function AudioGenerator() {
   // Download individual audio
   const handleDownloadAudio = (audioUrl: string, filename: string) => {
     console.log('📥 [DOWNLOAD] Starting individual audio download:', {
-      audioUrl,
+      audioUrl: audioUrl.substring(0, 50) + '...', // Don't log full base64
       filename,
       timestamp: new Date().toISOString()
     });
 
     try {
-      const link = document.createElement('a')
-      link.href = audioUrl
-      link.download = filename
-      document.body.appendChild(link)
-      
-      console.log('📥 [DOWNLOAD] Triggering download click');
-      link.click()
-      
-      document.body.removeChild(link)
-      console.log('✅ [DOWNLOAD] Individual download completed successfully');
+      // Check if it's a data URL (base64)
+      if (audioUrl.startsWith('data:')) {
+        // Convert data URL to blob
+        const byteCharacters = atob(audioUrl.split(',')[1]);
+        const byteNumbers = new Array(byteCharacters.length);
+        for (let i = 0; i < byteCharacters.length; i++) {
+          byteNumbers[i] = byteCharacters.charCodeAt(i);
+        }
+        const byteArray = new Uint8Array(byteNumbers);
+        const blob = new Blob([byteArray], { type: 'audio/mpeg' });
+        
+        // Create download link
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = filename;
+        document.body.appendChild(link);
+        
+        console.log('📥 [DOWNLOAD] Triggering download click for data URL');
+        link.click();
+        
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+        console.log('✅ [DOWNLOAD] Individual download completed successfully');
+      } else {
+        // Fallback for regular URLs
+        const link = document.createElement('a')
+        link.href = audioUrl
+        link.download = filename
+        document.body.appendChild(link)
+        
+        console.log('📥 [DOWNLOAD] Triggering download click for regular URL');
+        link.click()
+        
+        document.body.removeChild(link)
+        console.log('✅ [DOWNLOAD] Individual download completed successfully');
+      }
     } catch (error: any) {
       console.error('❌ [DOWNLOAD] Individual download failed:', {
         error: error.message,
         stack: error.stack,
-        audioUrl,
+        audioUrl: audioUrl.substring(0, 50) + '...',
         filename
       });
       showMessage(`Download failed: ${error.message}`, 'error');
@@ -605,7 +632,8 @@ export default function AudioGenerator() {
       chunks: completedChunks.map(c => ({
         chunkIndex: c.chunkIndex,
         filename: c.filename,
-        audioUrl: c.audioUrl
+        audioUrlType: c.audioUrl.startsWith('data:') ? 'data-url' : 'regular-url',
+        audioSize: c.audioUrl.length
       }))
     });
     
@@ -621,30 +649,47 @@ export default function AudioGenerator() {
       const zip = new JSZip()
       console.log('📦 [ZIP] Created new JSZip instance');
       
-      // Download each audio file and add to zip
+      // Process each audio chunk
       for (const chunk of completedChunks) {
         try {
-          console.log(`📥 [ZIP] Fetching chunk ${chunk.chunkIndex}:`, {
+          console.log(`📥 [ZIP] Processing chunk ${chunk.chunkIndex}:`, {
             chunkIndex: chunk.chunkIndex,
-            audioUrl: chunk.audioUrl,
-            filename: chunk.filename
+            filename: chunk.filename,
+            audioUrlType: chunk.audioUrl.startsWith('data:') ? 'data-url' : 'regular-url'
           });
           
-          const response = await fetch(chunk.audioUrl)
+          let audioBlob: Blob;
           
-          console.log(`📡 [ZIP] Fetch response for chunk ${chunk.chunkIndex}:`, {
-            status: response.status,
-            statusText: response.statusText,
-            ok: response.ok,
-            headers: Object.fromEntries(response.headers.entries()),
-            url: response.url
-          });
-          
-          if (!response.ok) {
-            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+          if (chunk.audioUrl.startsWith('data:')) {
+            // Handle base64 data URL
+            console.log(`📦 [ZIP] Converting data URL to blob for chunk ${chunk.chunkIndex}`);
+            const byteCharacters = atob(chunk.audioUrl.split(',')[1]);
+            const byteNumbers = new Array(byteCharacters.length);
+            for (let i = 0; i < byteCharacters.length; i++) {
+              byteNumbers[i] = byteCharacters.charCodeAt(i);
+            }
+            const byteArray = new Uint8Array(byteNumbers);
+            audioBlob = new Blob([byteArray], { type: 'audio/mpeg' });
+          } else {
+            // Handle regular URL (fallback)
+            console.log(`📥 [ZIP] Fetching from URL for chunk ${chunk.chunkIndex}`);
+            const response = await fetch(chunk.audioUrl)
+            
+            console.log(`📡 [ZIP] Fetch response for chunk ${chunk.chunkIndex}:`, {
+              status: response.status,
+              statusText: response.statusText,
+              ok: response.ok,
+              headers: Object.fromEntries(response.headers.entries()),
+              url: response.url
+            });
+            
+            if (!response.ok) {
+              throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+            }
+            
+            audioBlob = await response.blob();
           }
           
-          const audioBlob = await response.blob()
           console.log(`📦 [ZIP] Blob created for chunk ${chunk.chunkIndex}:`, {
             size: audioBlob.size,
             type: audioBlob.type
@@ -656,9 +701,9 @@ export default function AudioGenerator() {
           
           console.log(`✅ [ZIP] Added chunk ${chunk.chunkIndex} to ZIP as ${zipFilename}`);
         } catch (error: any) {
-          console.error(`❌ [ZIP] Failed to fetch audio for chunk ${chunk.chunkIndex}:`, {
+          console.error(`❌ [ZIP] Failed to process chunk ${chunk.chunkIndex}:`, {
             chunkIndex: chunk.chunkIndex,
-            audioUrl: chunk.audioUrl,
+            audioUrl: chunk.audioUrl.substring(0, 50) + '...',
             error: error.message,
             stack: error.stack
           });
