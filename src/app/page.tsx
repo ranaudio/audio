@@ -131,6 +131,7 @@ export default function AudioGenerator() {
   const [uploadError, setUploadError] = useState<string | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [isDragOver, setIsDragOver] = useState<boolean>(false)
+  const [delayCountdown, setDelayCountdown] = useState<number>(0)
 
   // Helper functions
   const showMessage = (msg: string, type: 'success' | 'error' | 'info' = 'info') => {
@@ -249,92 +250,132 @@ export default function AudioGenerator() {
     setAudioChunks([])
   }
 
-  // Process batch of chunks
+  // Process batch of chunks - now orchestrated entirely from frontend
   const processBatch = async (batchChunks: TextChunk[], batchIndex: number) => {
-    const requestBody: any = {
-      chunks: batchChunks.map(chunk => ({
-        index: chunk.index,
-        text: chunk.text
-      })),
-      provider: selectedProvider,
-      userId: 'demo_user'
-    };
-
-    // Add provider-specific parameters
-    if (selectedProvider === 'minimax') {
-      requestBody.voice = selectedVoice;
-      requestBody.model = selectedModel;
-    } else if (selectedProvider === 'elevenlabs') {
-      requestBody.elevenLabsVoiceId = selectedVoice;
-    }
-
     console.log(`🚀 [BATCH ${batchIndex + 1}] Starting batch processing:`, {
       batchIndex: batchIndex + 1,
       chunkCount: batchChunks.length,
       provider: selectedProvider,
       voice: selectedVoice,
       model: selectedModel,
-      requestBody: requestBody,
       chunks: batchChunks.map(c => ({ index: c.index, textLength: c.text.length }))
     });
 
-    try {
-      console.log(`📡 [BATCH ${batchIndex + 1}] Making fetch request to /api/generate-audio-batch`);
-      
-      const response = await fetch('/api/generate-audio-batch', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(requestBody)
-      });
+    // Process all chunks in this batch in parallel
+    const chunkPromises = batchChunks.map(async (chunk, i) => {
+      try {
+        console.log(`📡 [CHUNK ${chunk.index}] Starting generation:`, {
+          chunkIndex: chunk.index,
+          textLength: chunk.text.length,
+          provider: selectedProvider,
+          voice: selectedVoice
+        });
 
-      console.log(`📡 [BATCH ${batchIndex + 1}] Response received:`, {
-        status: response.status,
-        statusText: response.statusText,
-        ok: response.ok,
-        headers: Object.fromEntries(response.headers.entries()),
-        url: response.url
-      });
+        const requestBody: any = {
+          text: chunk.text,
+          provider: selectedProvider,
+          chunkIndex: chunk.index,
+          userId: 'demo_user'
+        };
 
-      if (!response.ok) {
-        let errorData;
-        try {
-          errorData = await response.json();
-          console.error(`❌ [BATCH ${batchIndex + 1}] Server error response:`, errorData);
-        } catch (parseError) {
-          console.error(`❌ [BATCH ${batchIndex + 1}] Failed to parse error response:`, parseError);
-          const responseText = await response.text();
-          console.error(`❌ [BATCH ${batchIndex + 1}] Raw error response:`, responseText);
-          errorData = { error: `HTTP ${response.status}: ${responseText || response.statusText}` };
+        // Add provider-specific parameters
+        if (selectedProvider === 'minimax') {
+          requestBody.voice = selectedVoice;
+          requestBody.model = selectedModel;
+        } else if (selectedProvider === 'elevenlabs') {
+          requestBody.elevenLabsVoiceId = selectedVoice;
         }
-        throw new Error(errorData.error || `Batch ${batchIndex + 1} failed: ${response.status} ${response.statusText}`);
+
+        const response = await fetch('/api/generate-audio-comprehensive', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(requestBody)
+        });
+
+        console.log(`📡 [CHUNK ${chunk.index}] Response received:`, {
+          status: response.status,
+          statusText: response.statusText,
+          ok: response.ok,
+          url: response.url
+        });
+
+        if (!response.ok) {
+          let errorData;
+          try {
+            errorData = await response.json();
+            console.error(`❌ [CHUNK ${chunk.index}] Server error response:`, errorData);
+          } catch (parseError) {
+            console.error(`❌ [CHUNK ${chunk.index}] Failed to parse error response:`, parseError);
+            const responseText = await response.text();
+            console.error(`❌ [CHUNK ${chunk.index}] Raw error response:`, responseText);
+            errorData = { error: `HTTP ${response.status}: ${responseText || response.statusText}` };
+          }
+          throw new Error(errorData.error || `Chunk ${chunk.index} failed: ${response.status} ${response.statusText}`);
+        }
+
+        const data = await response.json();
+        console.log(`✅ [CHUNK ${chunk.index}] Success response:`, {
+          chunkIndex: data.chunkIndex,
+          success: data.success,
+          audioUrl: data.audioUrl ? 'data-url-received' : 'no-audio-url',
+          filename: data.filename,
+          size: data.size
+        });
+
+        return {
+          chunkIndex: chunk.index,
+          success: true,
+          audioUrl: data.audioUrl,
+          duration: data.duration,
+          filename: data.filename,
+          size: data.size
+        };
+
+      } catch (error: any) {
+        console.error(`❌ [CHUNK ${chunk.index}] Generation failed:`, {
+          chunkIndex: chunk.index,
+          error: error.message,
+          stack: error.stack
+        });
+        
+        return {
+          chunkIndex: chunk.index,
+          success: false,
+          error: error.message
+        };
       }
+    });
 
-      const data = await response.json();
-      console.log(`✅ [BATCH ${batchIndex + 1}] Success response:`, {
-        totalChunks: data.totalChunks,
-        successfulChunks: data.successfulChunks,
-        failedChunks: data.failedChunks,
-        hasErrors: !!data.errors,
-        results: data.results?.map((r: any) => ({
-          chunkIndex: r.chunkIndex,
-          success: r.success,
-          audioUrl: r.audioUrl,
-          filename: r.filename,
-          error: r.error
-        }))
-      });
+    // Wait for all chunks in this batch to complete
+    const results = await Promise.allSettled(chunkPromises);
+    
+    // Process results
+    const processedResults = results.map((result, index) => {
+      if (result.status === 'fulfilled') {
+        return result.value;
+      } else {
+        const chunk = batchChunks[index];
+        console.error(`❌ [CHUNK ${chunk.index}] Promise rejected:`, result.reason);
+        return {
+          chunkIndex: chunk.index,
+          success: false,
+          error: result.reason?.message || 'Unknown error'
+        };
+      }
+    });
 
-      return data.results;
+    console.log(`📊 [BATCH ${batchIndex + 1}] Batch completed:`, {
+      totalChunks: processedResults.length,
+      successful: processedResults.filter(r => r.success).length,
+      failed: processedResults.filter(r => !r.success).length,
+      results: processedResults.map(r => ({
+        chunkIndex: r.chunkIndex,
+        success: r.success,
+        error: r.error
+      }))
+    });
 
-    } catch (error: any) {
-      console.error(`❌ [BATCH ${batchIndex + 1}] Batch processing failed:`, {
-        error: error.message,
-        stack: error.stack,
-        name: error.name,
-        cause: error.cause
-      });
-      throw error;
-    }
+    return processedResults;
   }
 
   // Generate audio with batching
@@ -377,6 +418,7 @@ export default function AudioGenerator() {
     setIsGenerating(true)
     setIsPaused(false)
     setMessage('')
+    setDelayCountdown(0)
 
     // Initialize audio chunks
     const initialAudioChunks: AudioChunk[] = textChunks.map(chunk => ({
@@ -417,6 +459,32 @@ export default function AudioGenerator() {
           break
         }
 
+        // Add delay BEFORE sending the batch (except for the first batch)
+        if (batchIndex > 0 && !isPaused) {
+          const delaySeconds = 65; // 1:05 minutes
+          console.log(`⏱️ [GENERATION] Waiting ${delaySeconds} seconds before sending batch ${batchIndex + 1}...`);
+          
+          // Wait with countdown and pause checking
+          for (let i = delaySeconds; i > 0; i--) {
+            if (isPaused) {
+              console.log('⏸️ [GENERATION] Generation paused during delay');
+              showMessage('Generation paused during delay', 'info')
+              setDelayCountdown(0)
+              break
+            }
+            
+            setDelayCountdown(i)
+            const minutes = Math.floor(i / 60)
+            const seconds = i % 60
+            showMessage(`Waiting ${minutes}:${seconds.toString().padStart(2, '0')} before sending next batch...`, 'info')
+            
+            await new Promise(resolve => setTimeout(resolve, 1000))
+          }
+          
+          setDelayCountdown(0)
+          if (isPaused) break; // Exit if paused during delay
+        }
+
         const batchStart = batchIndex * batchSize
         const batchEnd = Math.min(batchStart + batchSize, textChunks.length)
         const batchChunks = textChunks.slice(batchStart, batchEnd)
@@ -426,7 +494,8 @@ export default function AudioGenerator() {
           batchStart,
           batchEnd,
           chunkCount: batchChunks.length,
-          chunkIndexes: batchChunks.map(c => c.index)
+          chunkIndexes: batchChunks.map(c => c.index),
+          sentAt: new Date().toISOString()
         });
 
         // Update progress
@@ -443,12 +512,21 @@ export default function AudioGenerator() {
         ))
 
         try {
+          const batchSentTime = Date.now();
+          console.log(`🚀 [GENERATION] Batch ${batchIndex + 1} sent at: ${new Date(batchSentTime).toISOString()}`);
+          
           const results = await processBatch(batchChunks, batchIndex)
+          
+          const batchCompletedTime = Date.now();
+          const processingDuration = (batchCompletedTime - batchSentTime) / 1000;
           
           console.log(`📊 [GENERATION] Batch ${batchIndex + 1} results:`, {
             totalResults: results.length,
             successful: results.filter((r: any) => r.success).length,
             failed: results.filter((r: any) => !r.success).length,
+            processingDuration: `${processingDuration.toFixed(1)}s`,
+            sentAt: new Date(batchSentTime).toISOString(),
+            completedAt: new Date(batchCompletedTime).toISOString(),
             results: results.map((r: any) => ({
               chunkIndex: r.chunkIndex,
               success: r.success,
@@ -515,13 +593,6 @@ export default function AudioGenerator() {
             failedChunks: prev.failedChunks + batchChunks.length
           } : null)
         }
-
-        // Delay between batches (except for the last batch)
-        if (batchIndex < totalBatches - 1 && !isPaused) {
-          console.log(`⏱️ [GENERATION] Waiting 3 seconds before next batch...`);
-          showMessage(`Waiting 3 seconds before next batch...`, 'info')
-          await new Promise(resolve => setTimeout(resolve, 3000))
-        }
       }
 
       const finalProgress = batchProgress
@@ -552,6 +623,7 @@ export default function AudioGenerator() {
       console.log('🔚 [GENERATION] Audio generation process ended');
       setIsGenerating(false)
       setIsPaused(false)
+      setDelayCountdown(0)
     }
   }
 
@@ -1058,8 +1130,13 @@ export default function AudioGenerator() {
                       Batch {batchProgress.currentBatch}/{batchProgress.totalBatches} • 
                       {batchProgress.completedChunks}/{batchProgress.totalChunks} chunks
                       {batchProgress.failedChunks > 0 && ` • ${batchProgress.failedChunks} failed`}
+                      {delayCountdown > 0 && (
+                        <span className="text-orange-700 ml-2">
+                          • Next batch in {Math.floor(delayCountdown / 60)}:{(delayCountdown % 60).toString().padStart(2, '0')}
+                        </span>
+                      )}
                     </span>
-        </div>
+                  </div>
                   {isGenerating && (
                     <button
                       onClick={handlePauseResume}
@@ -1096,7 +1173,7 @@ export default function AudioGenerator() {
                 </div>
                 
                 <p className="text-sm text-blue-700 mt-2">
-                  Processing in batches of 10 chunks with 3-second delays between batches
+                  Processing in batches of 10 chunks with 1:05 minute delays between batch sends
                 </p>
               </motion.div>
             )}
