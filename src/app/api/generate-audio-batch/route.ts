@@ -14,6 +14,25 @@ interface ChunkError {
   error: string;
 }
 
+// Helper function to get the correct base URL
+function getBaseUrl(request: Request): string {
+  // Try to get from environment variable first
+  if (process.env.NEXT_PUBLIC_BASE_URL) {
+    return process.env.NEXT_PUBLIC_BASE_URL;
+  }
+  
+  // Extract from the request headers
+  const host = request.headers.get('host');
+  const protocol = request.headers.get('x-forwarded-proto') || 'http';
+  
+  if (host) {
+    return `${protocol}://${host}`;
+  }
+  
+  // Fallback for development
+  return 'http://localhost:3000';
+}
+
 export async function POST(request: Request) {
   const requestBody = await request.json();
   const { chunks, provider, voice, model, elevenLabsVoiceId, userId = "unknown_user" } = requestBody;
@@ -48,8 +67,10 @@ export async function POST(request: Request) {
   try {
     const batchResults: ChunkResult[] = [];
     const errors: ChunkError[] = [];
+    const baseUrl = getBaseUrl(request);
 
     console.log(`🚀 Processing ${chunks.length} chunks asynchronously in parallel`);
+    console.log(`🌐 Using base URL: ${baseUrl}`);
 
     // Create all chunk generation promises
     const chunkPromises = chunks.map(async (chunk: any, i: number): Promise<ChunkResult> => {
@@ -72,15 +93,18 @@ export async function POST(request: Request) {
         }
 
         // Call the single chunk generation endpoint
-        const response = await fetch(`${process.env.NEXT_PUBLIC_BASE_URL || 'http://localhost:3000'}/api/generate-audio-comprehensive`, {
+        const response = await fetch(`${baseUrl}/api/generate-audio-comprehensive`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 
+            'Content-Type': 'application/json',
+            'User-Agent': 'AudioGenerator-Batch/1.0'
+          },
           body: JSON.stringify(requestBody)
         });
 
         if (!response.ok) {
-          const errorData = await response.json();
-          throw new Error(errorData.error || `Generation failed: ${response.status}`);
+          const errorData = await response.json().catch(() => ({ error: 'Unknown error' }));
+          throw new Error(errorData.error || `Generation failed: ${response.status} ${response.statusText}`);
         }
 
         const data = await response.json();

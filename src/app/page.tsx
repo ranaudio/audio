@@ -1,9 +1,10 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useRef } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import JSZip from 'jszip'
 import { saveAs } from 'file-saver'
+import mammoth from 'mammoth'
 import { 
   Volume2, 
   Download, 
@@ -19,7 +20,9 @@ import {
   Clock,
   Hash,
   Pause,
-  Play
+  Play,
+  Upload,
+  File
 } from 'lucide-react'
 
 // TTS Provider configurations
@@ -123,6 +126,11 @@ export default function AudioGenerator() {
   const [batchProgress, setBatchProgress] = useState<BatchProgress | null>(null)
   const [message, setMessage] = useState<string>('')
   const [messageType, setMessageType] = useState<'success' | 'error' | 'info'>('info')
+  const [uploading, setUploading] = useState<boolean>(false)
+  const [uploadedText, setUploadedText] = useState<string>('')
+  const [uploadError, setUploadError] = useState<string | null>(null)
+  const fileInputRef = useRef<HTMLInputElement>(null)
+  const [isDragOver, setIsDragOver] = useState<boolean>(false)
 
   // Helper functions
   const showMessage = (msg: string, type: 'success' | 'error' | 'info' = 'info') => {
@@ -477,6 +485,78 @@ export default function AudioGenerator() {
     }
   }
 
+  // File upload handler
+  const processFile = async (file: File) => {
+    if (!file.name.toLowerCase().endsWith('.docx')) {
+      showMessage('Please select a DOCX file', 'error')
+      return
+    }
+
+    setUploading(true)
+    showMessage('Processing DOCX file...', 'info')
+
+    try {
+      const arrayBuffer = await file.arrayBuffer()
+      const result = await mammoth.extractRawText({ arrayBuffer })
+      
+      if (result.value) {
+        const extractedText = result.value.trim()
+        setText(extractedText)
+        handleTextChange(extractedText)
+        showMessage(`Successfully extracted ${extractedText.length} characters from ${file.name}`, 'success')
+      } else {
+        showMessage('No text found in the DOCX file', 'error')
+      }
+
+      // Show warnings if any
+      if (result.messages && result.messages.length > 0) {
+        console.warn('DOCX parsing warnings:', result.messages)
+      }
+
+    } catch (error: any) {
+      console.error('Error processing DOCX file:', error)
+      showMessage(`Failed to process DOCX file: ${error.message}`, 'error')
+    } finally {
+      setUploading(false)
+      // Reset file input
+      if (fileInputRef.current) {
+        fileInputRef.current.value = ''
+      }
+    }
+  }
+
+  const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0]
+    if (!file) return
+    await processFile(file)
+  }
+
+  // Drag and drop handlers
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault()
+    setIsDragOver(true)
+  }
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault()
+    setIsDragOver(false)
+  }
+
+  const handleDrop = async (e: React.DragEvent) => {
+    e.preventDefault()
+    setIsDragOver(false)
+    
+    const files = Array.from(e.dataTransfer.files)
+    const docxFile = files.find(file => file.name.toLowerCase().endsWith('.docx'))
+    
+    if (!docxFile) {
+      showMessage('Please drop a DOCX file', 'error')
+      return
+    }
+
+    await processFile(docxFile)
+  }
+
   const currentProvider = TTS_PROVIDERS[selectedProvider as keyof typeof TTS_PROVIDERS]
   const completedChunks = audioChunks.filter(chunk => chunk.status === 'completed')
 
@@ -519,10 +599,73 @@ export default function AudioGenerator() {
               <h2 className="text-xl font-semibold text-gray-800">Your Script</h2>
             </div>
             
+            {/* File Upload Area */}
+            <div className="mb-4">
+              <div 
+                className={`flex items-center gap-3 mb-3 p-4 rounded-lg border-2 border-dashed transition-all duration-200 ${
+                  isDragOver 
+                    ? 'border-purple-400 bg-purple-100' 
+                    : uploading
+                    ? 'border-blue-300 bg-blue-50'
+                    : 'border-purple-300 bg-purple-50'
+                }`}
+                onDragOver={handleDragOver}
+                onDragLeave={handleDragLeave}
+                onDrop={handleDrop}
+              >
+                <motion.button
+                  whileHover={{ scale: uploading ? 1 : 1.02 }}
+                  whileTap={{ scale: uploading ? 1 : 0.98 }}
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={uploading}
+                  className={`flex items-center gap-2 px-4 py-2 rounded-lg transition-all duration-200 ${
+                    uploading 
+                      ? 'bg-blue-100 cursor-not-allowed' 
+                      : 'bg-white hover:bg-gray-50 cursor-pointer shadow-sm'
+                  }`}
+                >
+                  {uploading ? (
+                    <>
+                      <Loader2 className="h-4 w-4 animate-spin text-blue-600" />
+                      <span className="text-blue-700 font-medium">Processing...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Upload className="h-4 w-4 text-purple-600" />
+                      <span className="text-purple-700 font-medium">Upload DOCX</span>
+                    </>
+                  )}
+                </motion.button>
+                
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept=".docx"
+                  onChange={handleFileUpload}
+                  className="hidden"
+                />
+                
+                <div className="flex-1 text-center">
+                  <div className="text-sm text-gray-600">
+                    {isDragOver ? (
+                      <span className="text-purple-700 font-medium">Drop DOCX file here</span>
+                    ) : (
+                      <span>Drag & drop a DOCX file here, or click Upload</span>
+                    )}
+                  </div>
+                  <div className="text-xs text-gray-500 mt-1">
+                    Supports Microsoft Word documents (.docx)
+                  </div>
+                </div>
+                
+                <File className={`h-6 w-6 ${isDragOver ? 'text-purple-600' : 'text-gray-400'}`} />
+              </div>
+            </div>
+            
             <textarea
               value={text}
               onChange={(e) => handleTextChange(e.target.value)}
-              placeholder="Paste your script here... Text will be automatically chunked based on the selected provider's limits."
+              placeholder="Paste your script here or upload a DOCX file above... Text will be automatically chunked based on the selected provider's limits."
               className="w-full h-40 p-4 border border-gray-200 rounded-xl focus:ring-2 focus:ring-purple-500 focus:border-transparent resize-none text-gray-700 placeholder-gray-400"
               maxLength={50000}
             />
@@ -630,7 +773,7 @@ export default function AudioGenerator() {
                       {batchProgress.completedChunks}/{batchProgress.totalChunks} chunks
                       {batchProgress.failedChunks > 0 && ` • ${batchProgress.failedChunks} failed`}
                     </span>
-                  </div>
+        </div>
                   {isGenerating && (
                     <button
                       onClick={handlePauseResume}
